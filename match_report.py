@@ -1,4 +1,4 @@
-"""Разбор матча Dota 2 по данным OpenDota: перелом, кто слил, награды, чат, итог по игроку.
+"""Разбор матча Dota 2 по данным OpenDota: перелом, кто слил катку, награды, чат, итог по игроку.
 
 Подробные данные (график золота, варды, оглушения, чат) есть только у матчей,
 которые OpenDota уже разобрал по реплею. Для остальных разбор получается короче.
@@ -82,25 +82,67 @@ def thrown_lead(match: dict) -> str | None:
     return f"🫠 <b>Упустили:</b> {SIDES[losers_radiant]} вели на {fmt_int(lead)} золота к {minute}:00"
 
 
-def feeder_line(team: list[dict], heroes: dict, whose: str) -> str | None:
-    """Кто слил: больше всех смертей в команде, их доля и сколько золота отдал врагу."""
-    team_deaths = sum(p["deaths"] for p in team)
-    if not team_deaths:
-        return None
-    worst = max(team, key=lambda p: (p["deaths"], -p["kills"] - p["assists"]))
-    share = worst["deaths"] / team_deaths
-    kda = (worst["kills"] + worst["assists"]) / max(worst["deaths"], 1)
-    if worst["deaths"] >= 8 and share >= 0.35 and kda < 1.5:
-        verdict = "Слил?"
-    elif worst["deaths"] >= 8 and share >= 0.3:
-        verdict = "Под вопросом"
-    else:
-        return None
-    fed = sum(d.get("gold_fed", 0) for d in worst.get("deaths_log") or [])
-    fed_text = f", отдал врагу {fmt_int(fed)} золота" if fed else ""
-    leaver = " · ушёл из игры" if worst.get("leaver_status", 0) > 1 else ""
-    return (f"💀 <b>{verdict}</b> {html.escape(hero_name(worst, heroes))} ({whose}) — {worst['deaths']} из "
-            f"{team_deaths} смертей команды ({share:.0%}){fed_text}{leaver}")
+def gold_fed(p: dict) -> int:
+    return sum(d.get("gold_fed", 0) for d in p.get("deaths_log") or [])
+
+
+def shares(values: list[float]) -> list[float]:
+    total = sum(values)
+    return [v / total for v in values] if total else [1 / len(values)] * len(values)
+
+
+def missing(values: list[float]) -> list[float]:
+    """Доля «недоданного»: чем меньше вклад игрока, тем больше его доля. Сумма — 1."""
+    s = shares(values)
+    n = len(s)
+    return [(1 - x) / (n - 1) for x in s] if n > 1 else [1.0]
+
+
+def blame_section(losers: list[dict], me: dict, heroes: dict) -> str:
+    """Кто вероятнее всего слил катку: вероятность по каждому игроку проигравшей команды.
+
+    Вклад в «вину»: 45% — доля смертей команды, 20% — сколько золота отдал врагу,
+    20% — мало убийств и помощи, 15% — мало урона. Ливер получает тройной вес.
+    Разница усиливается возведением в куб, итог нормируется до 100%.
+    """
+    deaths = shares([p["deaths"] for p in losers])
+    fed_values = [gold_fed(p) for p in losers]
+    fed = shares(fed_values) if any(fed_values) else deaths
+    low_impact = missing([p["kills"] + p["assists"] for p in losers])
+    low_damage = missing([p.get("hero_damage") or 0 for p in losers])
+
+    weights = []
+    for i, p in enumerate(losers):
+        w = 0.45 * deaths[i] + 0.20 * fed[i] + 0.20 * low_impact[i] + 0.15 * low_damage[i]
+        if p.get("leaver_status", 0) > 1:
+            w *= 3
+        weights.append(w ** 3)
+    chances = shares(weights)
+    ranked = sorted(zip(losers, chances), key=lambda pc: -pc[1])
+
+    worst, top = ranked[0]
+    team_deaths = sum(p["deaths"] for p in losers) or 1
+    reasons = [f"{worst['deaths']} из {team_deaths} смертей команды"]
+    if gold_fed(worst):
+        reasons.append(f"отдал врагу {fmt_int(gold_fed(worst))} золота")
+    reasons.append(f"K/D/A {worst['kills']}/{worst['deaths']}/{worst['assists']}")
+    if worst.get("leaver_status", 0) > 1:
+        reasons.append("ушёл из игры")
+
+    def label(p: dict) -> str:
+        name = html.escape(hero_name(p, heroes))
+        return f"{name} (это ты 😬)" if p is me else name
+
+    lines = [
+        "<b>🎯 Кто слил катку</b>",
+        f"Скорее всего — <b>{label(worst)}</b>: {top:.0%}",
+        "<i>" + ", ".join(reasons) + "</i>",
+        "",
+    ]
+    for p, chance in ranked:
+        bar = "▰" * round(chance * 10) + "▱" * (10 - round(chance * 10))
+        lines.append(f"{bar} {chance:>4.0%}  {label(p)}")
+    return "\n".join(lines)
 
 
 def awards(players: list[dict], heroes: dict) -> list[str]:
@@ -143,42 +185,47 @@ def me_line(me: dict, team: list[dict], heroes: dict) -> str:
     return "⚖️ <b>Ты:</b> " + ", ".join(parts)
 
 
-def build_report(match: dict, account_id: int, heroes: dict) -> tuple[str, str | None]:
-    """Возвращает (текст сообщения в HTML, картинку героя игрока)."""
+def find_me(match: dict, account_id: int) -> dict:
     players = match["players"]
-    me = next((p for p in players if p.get("account_id") == account_id), players[0])
-    my_side = is_radiant(me)
-    won = my_side == match["radiant_win"]
-    team = [p for p in players if is_radiant(p) == my_side]
-    enemies = [p for p in players if is_radiant(p) != my_side]
+    return next((p for p in players if p.get("account_id") == account_id), players[0])
 
+
+def build_card(match: dict, account_id: int, heroes: dict) -> tuple[str, str | None]:
+    """Сообщение 1 — сразу после игры: результат, K/D/A, режим. Возвращает (HTML, картинка героя)."""
+    me = find_me(match, account_id)
+    won = is_radiant(me) == match["radiant_win"]
     mode = GAME_MODES.get(match.get("game_mode"), "Матч")
     if match.get("lobby_type") == 7:
         mode = f"Рейтинг · {mode}"
     link = f"https://www.opendota.com/matches/{match['match_id']}"
-    gpm = me.get("gold_per_min", 0)
-
-    head = [
+    text = "\n".join([
         f"{'🏆' if won else '💀'} <a href=\"{link}\"><b>{'ПОБЕДА' if won else 'ПОРАЖЕНИЕ'}</b></a>"
         f" — {html.escape(hero_name(me, heroes))}",
-        f"⚔️ {me['kills']} / {me['deaths']} / {me['assists']}   💰 {gpm} GPM   "
+        f"⚔️ {me['kills']} / {me['deaths']} / {me['assists']}   💰 {me.get('gold_per_min', 0)} GPM   "
         f"⏱ {mmss(match['duration'])}",
         f"🎮 {html.escape(mode)} · счёт {match.get('radiant_score', 0)}:{match.get('dire_score', 0)}",
-    ]
+    ])
+    return text, hero_image(me, heroes)
+
+
+def build_analysis(match: dict, account_id: int, heroes: dict) -> str:
+    """Сообщение 2 — когда реплей разобран: ход игры, кто слил, твой вклад, награды."""
+    players = match["players"]
+    me = find_me(match, account_id)
+    team = [p for p in players if is_radiant(p) == is_radiant(me)]
+    losers = [p for p in players if is_radiant(p) != match["radiant_win"]]
 
     analysis = [line for line in (
         turning_point(match),
         thrown_lead(match),
-        feeder_line(team, heroes, "твоя команда"),
-        feeder_line(enemies, heroes, "враги"),
         me_line(me, team, heroes),
         chat_line(match, heroes),
     ) if line]
 
-    sections = ["\n".join(head), "<b>🔎 Разбор матча</b>\n" + "\n".join(analysis)]
+    sections = ["<b>🔎 Разбор матча</b>\n" + "\n".join(analysis), blame_section(losers, me, heroes)]
     award_lines = awards(players, heroes)
     if award_lines:
         sections.append("<b>🏅 Награды</b>\n" + "\n".join(award_lines))
     if not (match.get("od_data") or {}).get("has_parsed"):
         sections.append("<i>OpenDota не успел разобрать реплей, поэтому без перелома, вардов и чата.</i>")
-    return "\n\n".join(sections), hero_image(me, heroes)
+    return "\n\n".join(sections)

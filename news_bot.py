@@ -35,13 +35,15 @@ TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 
-def tg_call(method: str, params: dict) -> None:
+def tg_call(method: str, params: dict) -> dict:
+    """Вызов Telegram Bot API; возвращает отправленное сообщение (нужен его message_id для ответов)."""
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{TOKEN}/{method}",
         data=json.dumps({"chat_id": CHAT_ID, **params}).encode(),
         headers={"Content-Type": "application/json"},
     )
-    urllib.request.urlopen(req, timeout=30).close()
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read()).get("result", {})
 
 
 def telegram(text: str) -> None:

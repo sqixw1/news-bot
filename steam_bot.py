@@ -13,7 +13,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from match_report import build_report
+from match_report import build_analysis, build_card
 from news_bot import telegram, tg_call
 
 STEAM_ID = os.environ.get("STEAM_ID", "")
@@ -23,8 +23,8 @@ ACCOUNT_ID = int(STEAM_ID) - 76561197960265728 if STEAM_ID else 0
 STATE_FILE = Path(__file__).parent / "steam_state.json"
 # Ручной запуск с галочкой «demo»: прислать последний матч и кто сейчас в сети
 DEMO = os.environ.get("DEMO") == "true"
-MAX_MATCHES = 5  # сколько отчётов о матчах за одну проверку
-PARSE_WAIT_MIN = 60  # сколько ждать разбора реплея, прежде чем прислать короткий отчёт
+MAX_MATCHES = 5  # сколько новых матчей обрабатывать за одну проверку
+PARSE_WAIT_MIN = 60  # сколько ждать разбора реплея, прежде чем прислать короткий разбор
 
 
 def get_json(url: str):
@@ -33,15 +33,24 @@ def get_json(url: str):
         return json.loads(resp.read())
 
 
-def send_report(match_id: int, heroes: dict) -> None:
-    """Одно сообщение: результат матча + разбор, с картинкой героя над текстом."""
+def send_card(match_id: int, heroes: dict) -> int | None:
+    """Сообщение 1 — сразу: картинка героя и результат. Возвращает message_id для ответа разбором."""
     match = get_json(f"https://api.opendota.com/api/matches/{match_id}")
-    text, image = build_report(match, ACCOUNT_ID, heroes)
-    params = {"text": text, "parse_mode": "HTML"}
+    text, image = build_card(match, ACCOUNT_ID, heroes)
     if image:
-        params["link_preview_options"] = {"url": image, "prefer_large_media": True, "show_above_text": True}
+        sent = tg_call("sendPhoto", {"photo": image, "caption": text, "parse_mode": "HTML"})
     else:
-        params["link_preview_options"] = {"is_disabled": True}
+        sent = tg_call("sendMessage", {"text": text, "parse_mode": "HTML"})
+    return sent.get("message_id")
+
+
+def send_analysis(match_id: int, heroes: dict, reply_to: int | None) -> None:
+    """Сообщение 2 — когда реплей разобран: разбор ответом на карточку матча."""
+    match = get_json(f"https://api.opendota.com/api/matches/{match_id}")
+    params = {"text": build_analysis(match, ACCOUNT_ID, heroes), "parse_mode": "HTML",
+              "link_preview_options": {"is_disabled": True}}
+    if reply_to:
+        params["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
     tg_call("sendMessage", params)
 
 
@@ -63,29 +72,30 @@ def check_matches(state: dict) -> None:
         return
     last = state.get("last_match_id")
     state["last_match_id"] = max(m["match_id"] for m in matches)
-    pending = state.setdefault("pending", {})  # match_id -> когда заметили новый матч
+    # match_id -> {"seen": когда заметили, "card": message_id карточки}
+    pending = state.setdefault("pending", {})
+    heroes = get_json("https://api.opendota.com/api/constants/heroes")
 
     if DEMO:
         latest = state["last_match_id"]
         if not is_parsed(latest):
             request_parse(latest)
-        send_report(latest, get_json("https://api.opendota.com/api/constants/heroes"))
+        send_analysis(latest, heroes, send_card(latest, heroes))
         return
     if last is None:
         return  # первый запуск: только запоминаем, где остановились
 
-    for m in sorted(matches, key=lambda m: m["match_id"]):
-        if m["match_id"] > last:
-            request_parse(m["match_id"])
-            pending[str(m["match_id"])] = time.time()
+    new = sorted(m["match_id"] for m in matches if m["match_id"] > last)
+    for match_id in new[-MAX_MATCHES:]:
+        card = send_card(match_id, heroes)
+        request_parse(match_id)
+        pending[str(match_id)] = {"seen": time.time(), "card": card}
 
-    # Отчёт уходит, когда реплей разобран — или после PARSE_WAIT_MIN минут ожидания
-    heroes = None
-    for match_id, seen_at in sorted(pending.items())[:MAX_MATCHES]:
-        waited_long = time.time() - seen_at > PARSE_WAIT_MIN * 60
+    # Разбор уходит, когда реплей разобран — или после PARSE_WAIT_MIN минут ожидания
+    for match_id, info in sorted(pending.items()):
+        waited_long = time.time() - info["seen"] > PARSE_WAIT_MIN * 60
         if is_parsed(int(match_id)) or waited_long:
-            heroes = heroes or get_json("https://api.opendota.com/api/constants/heroes")
-            send_report(int(match_id), heroes)
+            send_analysis(int(match_id), heroes, info.get("card"))
             del pending[match_id]
 
 
