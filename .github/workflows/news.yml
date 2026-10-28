@@ -29,6 +29,29 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python news_bot.py
 
+      - name: Достать состояние Steam из кэша
+        uses: actions/cache/restore@v4
+        with:
+          path: steam_state.json
+          key: steam-state-${{ github.run_id }}
+          restore-keys: steam-state-
+
+      - name: Проверить игры в Dota 2 и друзей в Steam
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          STEAM_ID: ${{ secrets.STEAM_ID }}
+          STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
+        run: python steam_bot.py
+
+      # Состояние Steam (кто из друзей в сети) хранится в кэше, а не в публичном репозитории
+      - name: Сохранить состояние Steam в кэш
+        if: hashFiles('steam_state.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: steam_state.json
+          key: steam-state-${{ github.run_id }}
+
       - name: Запомнить отправленные новости
         run: |
           git config user.name "news-bot"
