@@ -13,6 +13,7 @@ GAME_MODES = {
 SIDES = {True: "Силы Света", False: "Силы Тьмы"}
 TURN_RATIO = 0.25   # отставание по золоту, которое считаем переломом
 TURN_MINUTES = 3    # …если оно держится столько минут подряд
+TURN_MIN_GOLD = 3000  # и разница не меньше этой — иначе в начале игры 25% набегает на копейках
 
 
 def mmss(seconds: int) -> str:
@@ -50,7 +51,8 @@ def turning_point(match: dict) -> str | None:
     for minute in range(minutes):
         win_gold = sum(p["gold_t"][minute] for p in players if is_radiant(p) == winners_radiant)
         lose_gold = sum(p["gold_t"][minute] for p in players if is_radiant(p) != winners_radiant)
-        behind = win_gold > 0 and (win_gold - lose_gold) / win_gold >= TURN_RATIO
+        gap = win_gold - lose_gold
+        behind = win_gold > 0 and gap >= TURN_MIN_GOLD and gap / win_gold >= TURN_RATIO
         streak = streak + 1 if behind else 0
         if streak == TURN_MINUTES:
             start = minute - TURN_MINUTES + 1
@@ -120,7 +122,7 @@ def awards(players: list[dict], heroes: dict) -> list[str]:
 
 def chat_line(match: dict, heroes: dict) -> str | None:
     messages = [c for c in match.get("chat") or [] if c.get("type") == "chat"]
-    if not messages:
+    if len(messages) < 3:
         return None
     by_slot = {}
     for c in messages:
@@ -128,7 +130,7 @@ def chat_line(match: dict, heroes: dict) -> str | None:
     slot, count = max(by_slot.items(), key=lambda kv: kv[1])
     player = next((p for p in match["players"] if p["player_slot"] == slot), None)
     who = html.escape(hero_name(player, heroes)) if player else "Кто-то"
-    return f"💬 <b>Чат:</b> {len(messages)} сообщений, больше всех писал {who} ({count})"
+    return f"💬 <b>Чат:</b> сообщений — {len(messages)}, больше всех писал {who} ({count})"
 
 
 def me_line(me: dict, team: list[dict], heroes: dict) -> str:
