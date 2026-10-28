@@ -203,6 +203,8 @@ def read_messages(state: dict) -> None:
     first_time = "tg_offset" not in state
     updates = tg_call("getUpdates", {"offset": state.get("tg_offset", 0), "timeout": 0,
                                      "allowed_updates": ["message"]})
+    print(f"сообщений: {len(updates or [])}" + (" (первый запуск — пропускаю)" if first_time else ""))
+    state.setdefault("tg_offset", 0)  # иначе, пока сообщений нет, каждый запуск считается первым
     for upd in updates or []:
         state["tg_offset"] = upd["update_id"] + 1
         if first_time:
