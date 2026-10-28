@@ -2,7 +2,7 @@ name: Новости в Telegram
 
 on:
   schedule:
-    - cron: "*/15 * * * *"  # каждые 15 минут (GitHub может запускать с опозданием)
+    - cron: "*/10 * * * *"  # каждые 10 минут (GitHub может запускать с опозданием)
   workflow_dispatch:        # кнопка «Run workflow» для ручного запуска
     inputs:
       demo:

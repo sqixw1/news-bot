@@ -98,7 +98,7 @@ def missing(values: list[float]) -> list[float]:
     return [(1 - x) / (n - 1) for x in s] if n > 1 else [1.0]
 
 
-def blame_section(losers: list[dict], me: dict, heroes: dict) -> str:
+def blame_section(losers: list[dict], me: dict | None, heroes: dict) -> str:
     """Кто вероятнее всего слил катку: вероятность по каждому игроку проигравшей команды.
 
     Вклад в «вину»: 45% — доля смертей команды, 20% — сколько золота отдал врагу,
@@ -185,40 +185,50 @@ def me_line(me: dict, team: list[dict], heroes: dict) -> str:
     return "⚖️ <b>Ты:</b> " + ", ".join(parts)
 
 
-def find_me(match: dict, account_id: int) -> dict:
-    players = match["players"]
-    return next((p for p in players if p.get("account_id") == account_id), players[0])
+def find_me(match: dict, account_id: int | None) -> dict | None:
+    """Игрок, для которого делается отчёт; None — если его нет в матче (нейтральный разбор)."""
+    return next((p for p in match["players"] if account_id and p.get("account_id") == account_id), None)
 
 
-def build_card(match: dict, account_id: int, heroes: dict) -> tuple[str, str | None]:
-    """Сообщение 1 — сразу после игры: результат, K/D/A, режим. Возвращает (HTML, картинка героя)."""
+def build_card(match: dict, account_id: int | None, heroes: dict) -> tuple[str, str | None]:
+    """Сообщение 1 — результат, K/D/A, режим. Возвращает (HTML, картинка героя)."""
     me = find_me(match, account_id)
-    won = is_radiant(me) == match["radiant_win"]
     mode = GAME_MODES.get(match.get("game_mode"), "Матч")
     if match.get("lobby_type") == 7:
         mode = f"Рейтинг · {mode}"
     link = f"https://www.opendota.com/matches/{match['match_id']}"
+    footer = f"🎮 {html.escape(mode)} · счёт {match.get('radiant_score', 0)}:{match.get('dire_score', 0)}"
+
+    if me is None:
+        winner = SIDES[match["radiant_win"]]
+        text = "\n".join([
+            f"⚔️ <a href=\"{link}\"><b>МАТЧ {match['match_id']}</b></a> — победа: {winner}",
+            f"⏱ {mmss(match['duration'])}",
+            footer,
+        ])
+        return text, None
+
+    won = is_radiant(me) == match["radiant_win"]
     text = "\n".join([
         f"{'🏆' if won else '💀'} <a href=\"{link}\"><b>{'ПОБЕДА' if won else 'ПОРАЖЕНИЕ'}</b></a>"
         f" — {html.escape(hero_name(me, heroes))}",
         f"⚔️ {me['kills']} / {me['deaths']} / {me['assists']}   💰 {me.get('gold_per_min', 0)} GPM   "
         f"⏱ {mmss(match['duration'])}",
-        f"🎮 {html.escape(mode)} · счёт {match.get('radiant_score', 0)}:{match.get('dire_score', 0)}",
+        footer,
     ])
     return text, hero_image(me, heroes)
 
 
-def build_analysis(match: dict, account_id: int, heroes: dict) -> str:
-    """Сообщение 2 — когда реплей разобран: ход игры, кто слил, твой вклад, награды."""
+def build_analysis(match: dict, account_id: int | None, heroes: dict) -> str:
+    """Сообщение 2 — ход игры, кто слил, вклад игрока, награды."""
     players = match["players"]
     me = find_me(match, account_id)
-    team = [p for p in players if is_radiant(p) == is_radiant(me)]
     losers = [p for p in players if is_radiant(p) != match["radiant_win"]]
 
     analysis = [line for line in (
         turning_point(match),
         thrown_lead(match),
-        me_line(me, team, heroes),
+        me and me_line(me, [p for p in players if is_radiant(p) == is_radiant(me)], heroes),
         chat_line(match, heroes),
     ) if line]
 
