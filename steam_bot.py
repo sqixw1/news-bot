@@ -1,7 +1,7 @@
-"""Steam-часть бота: твои игры в Dota 2 и друзья онлайн — в Telegram.
+"""Steam-часть бота: разбор твоих игр в Dota 2 и друзья онлайн — в Telegram.
 
 Запускается тем же workflow после news_bot.py.
-Состояние (последний матч, кто из друзей был в сети) хранится в steam_state.json,
+Состояние (последний матч, матчи в ожидании разбора, кто из друзей был в сети) хранится в steam_state.json,
 но НЕ в репозитории, а в кэше GitHub Actions — чтобы активность друзей не была публичной.
 Секреты: STEAM_ID (SteamID64), STEAM_API_KEY (https://steamcommunity.com/dev/apikey).
 """
@@ -9,9 +9,11 @@
 import html
 import json
 import os
+import time
 import urllib.request
 from pathlib import Path
 
+from match_report import build_report
 from news_bot import telegram, tg_call
 
 STEAM_ID = os.environ.get("STEAM_ID", "")
@@ -21,12 +23,8 @@ ACCOUNT_ID = int(STEAM_ID) - 76561197960265728 if STEAM_ID else 0
 STATE_FILE = Path(__file__).parent / "steam_state.json"
 # Ручной запуск с галочкой «demo»: прислать последний матч и кто сейчас в сети
 DEMO = os.environ.get("DEMO") == "true"
-MAX_MATCHES = 5  # сколько карточек матчей за одну проверку
-
-GAME_MODES = {
-    1: "All Pick", 2: "Captains Mode", 3: "Random Draft", 4: "Single Draft", 5: "All Random",
-    18: "Ability Draft", 22: "All Pick", 23: "Турбо", 16: "Captains Draft",
-}
+MAX_MATCHES = 5  # сколько отчётов о матчах за одну проверку
+PARSE_WAIT_MIN = 60  # сколько ждать разбора реплея, прежде чем прислать короткий отчёт
 
 
 def get_json(url: str):
@@ -35,31 +33,28 @@ def get_json(url: str):
         return json.loads(resp.read())
 
 
-def mmss(seconds: int) -> str:
-    return f"{seconds // 60}:{seconds % 60:02d}"
-
-
-def send_match(m: dict, heroes: dict) -> None:
-    """Карточка матча: картинка героя, результат, K/D/A, GPM, длительность, режим."""
-    hero = heroes.get(str(m["hero_id"]), {})
-    hero_name = hero.get("localized_name", "Неизвестный герой")
-    won = (m["player_slot"] < 128) == m["radiant_win"]
-    mode = GAME_MODES.get(m["game_mode"], "Матч")
-    if m.get("lobby_type") == 7:
-        mode = f"Рейтинг · {mode}"
-    link = f"https://www.opendota.com/matches/{m['match_id']}"
-    caption = "\n\n".join([
-        f"{'🏆' if won else '💀'} <a href=\"{link}\"><b>{'ПОБЕДА' if won else 'ПОРАЖЕНИЕ'}</b></a>"
-        f" — {html.escape(hero_name)}",
-        f"⚔️ {m['kills']} / {m['deaths']} / {m['assists']}   "
-        f"💰 {m.get('gold_per_min', 0)} GPM   ⏱ {mmss(m['duration'])}",
-        f"🎮 {html.escape(mode)}",
-    ])
-    image = "https://cdn.cloudflare.steamstatic.com" + hero["img"].rstrip("?") if hero.get("img") else None
+def send_report(match_id: int, heroes: dict) -> None:
+    """Одно сообщение: результат матча + разбор, с картинкой героя над текстом."""
+    match = get_json(f"https://api.opendota.com/api/matches/{match_id}")
+    text, image = build_report(match, ACCOUNT_ID, heroes)
+    params = {"text": text, "parse_mode": "HTML"}
     if image:
-        tg_call("sendPhoto", {"photo": image, "caption": caption, "parse_mode": "HTML"})
+        params["link_preview_options"] = {"url": image, "prefer_large_media": True, "show_above_text": True}
     else:
-        telegram(caption)
+        params["link_preview_options"] = {"is_disabled": True}
+    tg_call("sendMessage", params)
+
+
+def request_parse(match_id: int) -> None:
+    """Просим OpenDota разобрать реплей — без этого не будет перелома, вардов и чата."""
+    req = urllib.request.Request(f"https://api.opendota.com/api/request/{match_id}", data=b"",
+                                 headers={"User-Agent": "Mozilla/5.0 NewsBot"})
+    urllib.request.urlopen(req, timeout=30).close()
+
+
+def is_parsed(match_id: int) -> bool:
+    match = get_json(f"https://api.opendota.com/api/matches/{match_id}")
+    return bool((match.get("od_data") or {}).get("has_parsed"))
 
 
 def check_matches(state: dict) -> None:
@@ -68,17 +63,30 @@ def check_matches(state: dict) -> None:
         return
     last = state.get("last_match_id")
     state["last_match_id"] = max(m["match_id"] for m in matches)
+    pending = state.setdefault("pending", {})  # match_id -> когда заметили новый матч
+
     if DEMO:
-        new = [max(matches, key=lambda m: m["match_id"])]
-    elif last is None:
-        return  # первый запуск: только запоминаем, где остановились
-    else:
-        new = sorted((m for m in matches if m["match_id"] > last), key=lambda m: m["match_id"])
-    if not new:
+        latest = state["last_match_id"]
+        if not is_parsed(latest):
+            request_parse(latest)
+        send_report(latest, get_json("https://api.opendota.com/api/constants/heroes"))
         return
-    heroes = get_json("https://api.opendota.com/api/constants/heroes")
-    for m in new[-MAX_MATCHES:]:
-        send_match(m, heroes)
+    if last is None:
+        return  # первый запуск: только запоминаем, где остановились
+
+    for m in sorted(matches, key=lambda m: m["match_id"]):
+        if m["match_id"] > last:
+            request_parse(m["match_id"])
+            pending[str(m["match_id"])] = time.time()
+
+    # Отчёт уходит, когда реплей разобран — или после PARSE_WAIT_MIN минут ожидания
+    heroes = None
+    for match_id, seen_at in sorted(pending.items())[:MAX_MATCHES]:
+        waited_long = time.time() - seen_at > PARSE_WAIT_MIN * 60
+        if is_parsed(int(match_id)) or waited_long:
+            heroes = heroes or get_json("https://api.opendota.com/api/constants/heroes")
+            send_report(int(match_id), heroes)
+            del pending[match_id]
 
 
 def check_friends(state: dict) -> None:
