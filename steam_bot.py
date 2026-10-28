@@ -114,7 +114,9 @@ def recent_match_ids(account: int) -> list[int]:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 matches = ((json.loads(resp.read()).get("data") or {}).get("player") or {}).get("matches")
             if matches:
+                print(f"{account}: Stratz, последний матч {matches[0]['id']}")
                 return [int(m["id"]) for m in matches]
+            print(f"Stratz {account}: матчей нет, беру OpenDota")
         except Exception as e:
             print(f"Stratz {account}: ошибка — {e}, беру OpenDota")
     try:
