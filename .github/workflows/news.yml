@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "*/15 * * * *"  # каждые 15 минут (GitHub может запускать с опозданием)
   workflow_dispatch:        # кнопка «Run workflow» для ручного запуска
+    inputs:
+      demo:
+        description: "Прислать последний матч и кто из друзей в сети"
+        type: boolean
+        default: false
 
 permissions:
   contents: write  # чтобы сохранить seen.json обратно в репозиторий
@@ -42,6 +47,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           STEAM_ID: ${{ secrets.STEAM_ID }}
           STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
+          DEMO: ${{ inputs.demo }}
         run: python steam_bot.py
 
       # Состояние Steam (кто из друзей в сети) хранится в кэше, а не в публичном репозитории

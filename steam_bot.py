@@ -19,6 +19,8 @@ STEAM_KEY = os.environ.get("STEAM_API_KEY", "")
 # 32-битный id, который использует OpenDota
 ACCOUNT_ID = int(STEAM_ID) - 76561197960265728 if STEAM_ID else 0
 STATE_FILE = Path(__file__).parent / "steam_state.json"
+# Ручной запуск с галочкой «demo»: прислать последний матч и кто сейчас в сети
+DEMO = os.environ.get("DEMO") == "true"
 MAX_MATCHES = 5  # сколько карточек матчей за одну проверку
 
 GAME_MODES = {
@@ -37,40 +39,46 @@ def mmss(seconds: int) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
+def send_match(m: dict, heroes: dict) -> None:
+    """Карточка матча: картинка героя, результат, K/D/A, GPM, длительность, режим."""
+    hero = heroes.get(str(m["hero_id"]), {})
+    hero_name = hero.get("localized_name", "Неизвестный герой")
+    won = (m["player_slot"] < 128) == m["radiant_win"]
+    mode = GAME_MODES.get(m["game_mode"], "Матч")
+    if m.get("lobby_type") == 7:
+        mode = f"Рейтинг · {mode}"
+    link = f"https://www.opendota.com/matches/{m['match_id']}"
+    caption = "\n\n".join([
+        f"{'🏆' if won else '💀'} <a href=\"{link}\"><b>{'ПОБЕДА' if won else 'ПОРАЖЕНИЕ'}</b></a>"
+        f" — {html.escape(hero_name)}",
+        f"⚔️ {m['kills']} / {m['deaths']} / {m['assists']}   "
+        f"💰 {m.get('gold_per_min', 0)} GPM   ⏱ {mmss(m['duration'])}",
+        f"🎮 {html.escape(mode)}",
+    ])
+    image = "https://cdn.cloudflare.steamstatic.com" + hero["img"].rstrip("?") if hero.get("img") else None
+    if image:
+        tg_call("sendPhoto", {"photo": image, "caption": caption, "parse_mode": "HTML"})
+    else:
+        telegram(caption)
+
+
 def check_matches(state: dict) -> None:
     matches = get_json(f"https://api.opendota.com/api/players/{ACCOUNT_ID}/recentMatches")
     if not matches:
         return
     last = state.get("last_match_id")
     state["last_match_id"] = max(m["match_id"] for m in matches)
-    if last is None:
+    if DEMO:
+        new = [max(matches, key=lambda m: m["match_id"])]
+    elif last is None:
         return  # первый запуск: только запоминаем, где остановились
-
-    new = sorted((m for m in matches if m["match_id"] > last), key=lambda m: m["match_id"])
+    else:
+        new = sorted((m for m in matches if m["match_id"] > last), key=lambda m: m["match_id"])
     if not new:
         return
     heroes = get_json("https://api.opendota.com/api/constants/heroes")
-
     for m in new[-MAX_MATCHES:]:
-        hero = heroes.get(str(m["hero_id"]), {})
-        hero_name = hero.get("localized_name", "Неизвестный герой")
-        won = (m["player_slot"] < 128) == m["radiant_win"]
-        mode = GAME_MODES.get(m["game_mode"], "Матч")
-        if m.get("lobby_type") == 7:
-            mode = f"Рейтинг · {mode}"
-        link = f"https://www.opendota.com/matches/{m['match_id']}"
-        caption = "\n\n".join([
-            f"{'🏆' if won else '💀'} <a href=\"{link}\"><b>{'ПОБЕДА' if won else 'ПОРАЖЕНИЕ'}</b></a>"
-            f" — {html.escape(hero_name)}",
-            f"⚔️ {m['kills']} / {m['deaths']} / {m['assists']}   "
-            f"💰 {m.get('gold_per_min', 0)} GPM   ⏱ {mmss(m['duration'])}",
-            f"🎮 {html.escape(mode)}",
-        ])
-        image = "https://cdn.cloudflare.steamstatic.com" + hero["img"].rstrip("?") if hero.get("img") else None
-        if image:
-            tg_call("sendPhoto", {"photo": image, "caption": caption, "parse_mode": "HTML"})
-        else:
-            telegram(caption)
+        send_match(m, heroes)
 
 
 def check_friends(state: dict) -> None:
@@ -90,6 +98,19 @@ def check_friends(state: dict) -> None:
     now = {p["steamid"]: {"online": p.get("personastate", 0) != 0, "game": p.get("gameextrainfo")}
            for p in players}
     state["friends"] = now
+
+    if DEMO:
+        lines = []
+        for p in players:
+            cur = now[p["steamid"]]
+            if not cur["online"]:
+                continue
+            name = html.escape(p.get("personaname", "Друг"))
+            lines.append(f"🎮 <b>{name}</b> — {html.escape(cur['game'])}" if cur["game"]
+                         else f"🟢 <b>{name}</b>")
+        telegram(f"👥 <b>Друзья в Steam</b> · {len(lines)} из {len(players)} в сети\n\n"
+                 + ("\n".join(lines) if lines else "<i>Сейчас никого нет в сети.</i>"))
+        return
     if before is None:
         return  # первый запуск: только запоминаем
 
