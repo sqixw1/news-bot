@@ -13,6 +13,10 @@ on:
         description: "Номера матчей через запятую — прислать их разборы"
         type: string
         default: ""
+      message:
+        description: "Отправить себе это сообщение от бота"
+        type: string
+        default: ""
 
 permissions:
   contents: write  # чтобы сохранить seen.json обратно в репозиторий
@@ -54,6 +58,7 @@ jobs:
           STRATZ_TOKEN: ${{ secrets.STRATZ_TOKEN }}
           DEMO: ${{ inputs.demo }}
           MATCHES: ${{ inputs.matches }}
+          MESSAGE: ${{ inputs.message }}
         run: python steam_bot.py
 
       # Состояние Steam (кто из друзей в сети) хранится в кэше, а не в публичном репозитории

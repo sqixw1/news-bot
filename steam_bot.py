@@ -28,6 +28,8 @@ STATE_FILE = Path(__file__).parent / "steam_state.json"
 # Ручной запуск с галочкой «demo»: прислать владельцу последний матч и кто сейчас в сети
 DEMO = os.environ.get("DEMO") == "true"
 # Ручной запуск с полем «matches»: разобрать эти матчи для владельца (номера через запятую или пробел)
+# Ручной запуск с полем «message»: отправить владельцу этот текст
+MESSAGE = os.environ.get("MESSAGE", "").strip()
 MATCHES = [int(x) for x in re.findall(r"\d{8,11}", os.environ.get("MATCHES", ""))]
 MAX_MATCHES = 5  # сколько новых матчей одного игрока обрабатывать за одну проверку
 PARSE_WAIT_MIN = 60  # сколько ждать разбора реплея, прежде чем прислать короткий разбор
@@ -326,6 +328,10 @@ def load_state() -> dict:
 
 def main() -> None:
     state = load_state()
+    if MESSAGE:
+        telegram(html.escape(MESSAGE))
+        print("сообщение владельцу отправлено")
+        return
     if MATCHES:
         owner = str(CHAT_ID)
         account = state["users"].get(owner, {}).get("account")
