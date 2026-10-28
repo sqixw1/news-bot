@@ -1,4 +1,4 @@
-"""Новостной бот для GitHub Actions: проверяет новости и присылает новые в Telegram.
+"""Новостной бот для GitHub Actions: проверяет новости Dota 2 и присылает новые в Telegram.
 
 Запускается по расписанию (.github/workflows/news.yml), делает одну проверку и завершается.
 Какие новости уже отправлены, хранится в seen.json — workflow коммитит его обратно в репозиторий.
@@ -18,9 +18,6 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 FEEDS = {
-    "BBC": "https://feeds.bbci.co.uk/russian/rss.xml",
-    "DW": "https://rss.dw.com/xml/rss-ru-all",
-    "Euronews": "https://ru.euronews.com/rss",
     "Dota2.ru": "https://dota2.ru/news/rss/",
     "Dota 2 (Steam)": "https://store.steampowered.com/feeds/news/app/570/?l=russian",
 }
