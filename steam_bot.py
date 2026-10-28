@@ -22,6 +22,7 @@ from news_bot import CHAT_ID, telegram, tg_call
 
 STEAM_ID = os.environ.get("STEAM_ID", "")
 STEAM_KEY = os.environ.get("STEAM_API_KEY", "")
+STRATZ_TOKEN = os.environ.get("STRATZ_TOKEN", "")  # https://stratz.com/api — новые игры видит быстрее OpenDota
 STEAM64_BASE = 76561197960265728  # SteamID64 = это число + 32-битный id, который использует OpenDota
 STATE_FILE = Path(__file__).parent / "steam_state.json"
 # Ручной запуск с галочкой «demo»: прислать владельцу последний матч и кто сейчас в сети
@@ -99,6 +100,30 @@ def refresh_player(account: int) -> None:
     urllib.request.urlopen(req, timeout=30).close()
 
 
+def recent_match_ids(account: int) -> list[int]:
+    """Номера последних матчей игрока: из Stratz, если есть токен, иначе из OpenDota."""
+    if STRATZ_TOKEN:
+        try:
+            query = "query($id: Long!) { player(steamAccountId: $id) { matches(request: {take: 10}) { id } } }"
+            req = urllib.request.Request(
+                "https://api.stratz.com/graphql",
+                data=json.dumps({"query": query, "variables": {"id": account}}).encode(),
+                headers={"Content-Type": "application/json", "User-Agent": "STRATZ_API",
+                         "Authorization": f"Bearer {STRATZ_TOKEN}"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                matches = ((json.loads(resp.read()).get("data") or {}).get("player") or {}).get("matches")
+            if matches:
+                return [int(m["id"]) for m in matches]
+        except Exception as e:
+            print(f"Stratz {account}: ошибка — {e}, беру OpenDota")
+    try:
+        refresh_player(account)  # новые игры появятся к следующей проверке
+    except Exception:
+        pass
+    return [m["match_id"] for m in get_json(f"https://api.opendota.com/api/players/{account}/recentMatches")]
+
+
 def is_parsed(match_id: int) -> bool:
     match = get_json(f"https://api.opendota.com/api/matches/{match_id}")
     return bool((match.get("od_data") or {}).get("has_parsed"))
@@ -135,18 +160,17 @@ def finish_reports(state: dict) -> None:
 def check_new_matches(state: dict) -> None:
     for chat, user in state.get("users", {}).items():
         try:
-            refresh_player(user["account"])  # новые игры появятся к следующей проверке
-            matches = get_json(f"https://api.opendota.com/api/players/{user['account']}/recentMatches")
+            matches = recent_match_ids(user["account"])
         except Exception as e:
             print(f"матчи {chat}: ошибка — {e}")
             continue
         if not matches:
             continue
         last = user.get("last_match_id")
-        user["last_match_id"] = max(m["match_id"] for m in matches)
+        user["last_match_id"] = max(matches)
         if last is None:
             continue  # только подписался: запоминаем, где остановились
-        new = sorted(m["match_id"] for m in matches if m["match_id"] > last)
+        new = sorted(m for m in matches if m > last)
         for match_id in new[-MAX_MATCHES:]:
             start_report(state, chat, match_id, user["account"])
 
@@ -193,14 +217,14 @@ def handle_message(state: dict, chat: str, text: str) -> None:
     if account is None:
         say(chat, HELP)
         return
-    matches = get_json(f"https://api.opendota.com/api/players/{account}/recentMatches")
+    matches = recent_match_ids(account)
     if not matches:
         say(chat, "😕 Не вижу матчей этого профиля. Проверь, что в Dota 2 включено: "
                   "Настройки → Социальные → «Открыть доступ к данным матчей», и что профиль Steam открытый.")
         return
     profile = get_json(f"https://api.opendota.com/api/players/{account}").get("profile") or {}
     name = html.escape(profile.get("personaname") or "игрок")
-    latest = max(m["match_id"] for m in matches)
+    latest = max(matches)
     users[chat] = {"account": account, "last_match_id": latest}
     say(chat, f"✅ Запомнил: <b>{name}</b>. После каждой игры пришлю разбор. "
               "А вот твой последний матч 👇")
@@ -299,8 +323,7 @@ def main() -> None:
     state = load_state()
     if DEMO and STEAM_ID:
         owner = str(CHAT_ID)
-        latest = max(m["match_id"] for m in get_json(
-            f"https://api.opendota.com/api/players/{state['users'][owner]['account']}/recentMatches"))
+        latest = max(recent_match_ids(state["users"][owner]["account"]))
         steps = [lambda s: start_report(s, owner, latest, s["users"][owner]["account"]), check_friends]
     else:
         steps = [read_messages, check_new_matches, finish_reports, check_friends]
