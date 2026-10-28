@@ -85,7 +85,8 @@ def send_analysis(chat: str, match_id: int, account: int | None, reply_to: int |
               "link_preview_options": {"is_disabled": True}}
     if reply_to:
         params["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
-    tg_call("sendMessage", params)
+    sent = tg_call("sendMessage", params)
+    print(f"разбор {match_id} → {chat}: сообщение {sent.get('message_id')}")
 
 
 def request_parse(match_id: int) -> None:
@@ -328,6 +329,7 @@ def main() -> None:
     if MATCHES:
         owner = str(CHAT_ID)
         account = state["users"].get(owner, {}).get("account")
+        print(f"владелец {owner}, подписчики: " + ", ".join(f"{c}={u.get('account')}" for c, u in state["users"].items()))
         steps = [lambda s, m=m: start_report(s, owner, m, account) for m in MATCHES]
     elif DEMO and STEAM_ID:
         owner = str(CHAT_ID)
