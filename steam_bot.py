@@ -92,6 +92,13 @@ def request_parse(match_id: int) -> None:
     urllib.request.urlopen(req, timeout=30).close()
 
 
+def refresh_player(account: int) -> None:
+    """Просим OpenDota подтянуть свежие игры: сама она обновляет историю редко, и новые матчи не видны."""
+    req = urllib.request.Request(f"https://api.opendota.com/api/players/{account}/refresh", data=b"",
+                                 headers={"User-Agent": "Mozilla/5.0 NewsBot"})
+    urllib.request.urlopen(req, timeout=30).close()
+
+
 def is_parsed(match_id: int) -> bool:
     match = get_json(f"https://api.opendota.com/api/matches/{match_id}")
     return bool((match.get("od_data") or {}).get("has_parsed"))
@@ -128,6 +135,7 @@ def finish_reports(state: dict) -> None:
 def check_new_matches(state: dict) -> None:
     for chat, user in state.get("users", {}).items():
         try:
+            refresh_player(user["account"])  # новые игры появятся к следующей проверке
             matches = get_json(f"https://api.opendota.com/api/players/{user['account']}/recentMatches")
         except Exception as e:
             print(f"матчи {chat}: ошибка — {e}")
