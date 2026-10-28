@@ -27,6 +27,8 @@ STEAM64_BASE = 76561197960265728  # SteamID64 = это число + 32-битн�
 STATE_FILE = Path(__file__).parent / "steam_state.json"
 # Ручной запуск с галочкой «demo»: прислать владельцу последний матч и кто сейчас в сети
 DEMO = os.environ.get("DEMO") == "true"
+# Ручной запуск с полем «matches»: разобрать эти матчи для владельца (номера через запятую или пробел)
+MATCHES = [int(x) for x in re.findall(r"\d{8,11}", os.environ.get("MATCHES", ""))]
 MAX_MATCHES = 5  # сколько новых матчей одного игрока обрабатывать за одну проверку
 PARSE_WAIT_MIN = 60  # сколько ждать разбора реплея, прежде чем прислать короткий разбор
 
@@ -323,7 +325,11 @@ def load_state() -> dict:
 
 def main() -> None:
     state = load_state()
-    if DEMO and STEAM_ID:
+    if MATCHES:
+        owner = str(CHAT_ID)
+        account = state["users"].get(owner, {}).get("account")
+        steps = [lambda s, m=m: start_report(s, owner, m, account) for m in MATCHES]
+    elif DEMO and STEAM_ID:
         owner = str(CHAT_ID)
         latest = max(recent_match_ids(state["users"][owner]["account"]))
         steps = [lambda s: start_report(s, owner, latest, s["users"][owner]["account"]), check_friends]
